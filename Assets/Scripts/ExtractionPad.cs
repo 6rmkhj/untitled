@@ -10,9 +10,9 @@ namespace SignalHaul
             if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsServer)
                 return;
 
-            SignalCore core = other.GetComponentInParent<SignalCore>();
-            if (core != null && GameManager.Instance != null)
-                GameManager.Instance.DeliverCoreServer(core);
+            PhysicsLoot item = other.GetComponentInParent<PhysicsLoot>();
+            if (item != null && GameManager.Instance != null)
+                GameManager.Instance.DeliverLootServer(item);
         }
     }
 }
