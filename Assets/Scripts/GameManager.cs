@@ -17,6 +17,7 @@ namespace SignalHaul
         public float TimeLeft => timeLeft.Value;
         public bool Ended => ended.Value;
         public bool Won => won.Value;
+        public int MapSeed => mapSeed.Value;
 
         private readonly NetworkVariable<int> delivered = new(
             0,
@@ -38,8 +39,14 @@ namespace SignalHaul
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
+        private readonly NetworkVariable<int> mapSeed = new(
+            0,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
         private float serverTimeLeft;
         private float timerSyncAccumulator;
+        private RandomMapGenerator mapGenerator;
 
         public void Configure(int coreCount, float duration)
         {
@@ -50,6 +57,9 @@ namespace SignalHaul
         private void Awake()
         {
             Instance = this;
+            mapGenerator = GetComponent<RandomMapGenerator>();
+            if (mapGenerator == null)
+                mapGenerator = gameObject.AddComponent<RandomMapGenerator>();
         }
 
         private void OnDestroy()
@@ -60,18 +70,53 @@ namespace SignalHaul
 
         public override void OnNetworkSpawn()
         {
-            if (!IsServer)
+            mapSeed.OnValueChanged += OnMapSeedChanged;
+
+            if (IsServer)
+            {
+                if (totalCores <= 0)
+                    totalCores = FindObjectsByType<SignalCore>(FindObjectsSortMode.None).Length;
+
+                delivered.Value = 0;
+                serverTimeLeft = roundDuration;
+                timeLeft.Value = serverTimeLeft;
+                ended.Value = false;
+                won.Value = false;
+                timerSyncAccumulator = 0f;
+
+                int newSeed;
+                do
+                {
+                    newSeed = Random.Range(1, int.MaxValue);
+                }
+                while (newSeed == 0 || newSeed == mapSeed.Value);
+                mapSeed.Value = newSeed;
+            }
+
+            if (mapSeed.Value != 0)
+                ApplyMapSeed(mapSeed.Value);
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            mapSeed.OnValueChanged -= OnMapSeedChanged;
+        }
+
+        private void OnMapSeedChanged(int previousValue, int newValue)
+        {
+            if (newValue != 0)
+                ApplyMapSeed(newValue);
+        }
+
+        private void ApplyMapSeed(int seed)
+        {
+            if (mapGenerator == null)
                 return;
 
-            if (totalCores <= 0)
-                totalCores = FindObjectsByType<SignalCore>(FindObjectsSortMode.None).Length;
+            if (mapGenerator.CurrentSeed == seed && mapGenerator.GeneratedLevelCount > 0)
+                return;
 
-            delivered.Value = 0;
-            serverTimeLeft = roundDuration;
-            timeLeft.Value = serverTimeLeft;
-            ended.Value = false;
-            won.Value = false;
-            timerSyncAccumulator = 0f;
+            mapGenerator.Generate(seed, IsServer);
         }
 
         private void Update()
@@ -126,13 +171,14 @@ namespace SignalHaul
             };
             style.normal.textColor = Color.white;
 
-            GUI.Box(new Rect(18f, 18f, 330f, 146f), string.Empty);
-            GUI.Label(new Rect(32f, 28f, 290f, 28f), "SIGNAL HAUL", style);
-            GUI.Label(new Rect(32f, 62f, 290f, 24f), $"CORE  {Delivered}/{totalCores}");
-            GUI.Label(new Rect(32f, 88f, 290f, 24f), $"STORM  {Mathf.CeilToInt(TimeLeft)}s");
+            GUI.Box(new Rect(18f, 18f, 360f, 172f), string.Empty);
+            GUI.Label(new Rect(32f, 28f, 320f, 28f), "SIGNAL HAUL", style);
+            GUI.Label(new Rect(32f, 62f, 320f, 24f), $"CORE  {Delivered}/{totalCores}");
+            GUI.Label(new Rect(32f, 88f, 320f, 24f), $"STORM  {Mathf.CeilToInt(TimeLeft)}s");
+            GUI.Label(new Rect(32f, 114f, 320f, 24f), $"MAP  {MapSeed}");
 
             if (localPlayer != null)
-                GUI.Label(new Rect(32f, 114f, 290f, 24f), $"HP  {Mathf.CeilToInt(localPlayer.Health)}   STAMINA  {Mathf.CeilToInt(localPlayer.Stamina)}");
+                GUI.Label(new Rect(32f, 140f, 320f, 24f), $"HP  {Mathf.CeilToInt(localPlayer.Health)}   STAMINA  {Mathf.CeilToInt(localPlayer.Stamina)}");
 
             GUI.Label(new Rect(18f, Screen.height - 48f, 760f, 30f), "WASD 이동  |  SHIFT 달리기  |  SPACE 점프/벽등반  |  E 잡기/놓기  |  Q 던지기  |  ESC 커서");
 
@@ -161,7 +207,7 @@ namespace SignalHaul
             var small = new GUIStyle(style) { fontSize = 19, alignment = TextAnchor.MiddleCenter };
             GUI.Box(new Rect(Screen.width / 2f - 280f, Screen.height / 2f - 115f, 560f, 230f), string.Empty);
             GUI.Label(new Rect(Screen.width / 2f - 260f, Screen.height / 2f - 70f, 520f, 65f), Won ? "SIGNAL RESTORED" : "STORM CLAIMED THE CREW", big);
-            GUI.Label(new Rect(Screen.width / 2f - 260f, Screen.height / 2f + 12f, 520f, 55f), "Disconnect 후 다시 Host하면 새 라운드가 시작됩니다.", small);
+            GUI.Label(new Rect(Screen.width / 2f - 260f, Screen.height / 2f + 12f, 520f, 55f), "Disconnect 후 다시 Host하면 새 맵/라운드가 시작됩니다.", small);
         }
     }
 }
