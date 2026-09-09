@@ -1,6 +1,8 @@
 #if UNITY_EDITOR
 using System.IO;
 using SignalHaul;
+using Unity.Netcode;
+using Unity.Netcode.Transports.UTP;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -13,6 +15,8 @@ namespace SignalHaul.Editor
     {
         private const string ScenePath = "Assets/Scenes/Main.unity";
         private const string MaterialsFolder = "Assets/Materials";
+        private const string PrefabsFolder = "Assets/Prefabs";
+        private const string PlayerPrefabPath = PrefabsFolder + "/NetworkPlayer.prefab";
 
         static ProjectSetup()
         {
@@ -105,6 +109,8 @@ namespace SignalHaul.Editor
             var hazard = GetOrCreateMaterial("Hazard", new Color(.95f, .55f, .08f), .15f, .3f);
             var cyan = GetOrCreateMaterial("SignalCyan", new Color(.05f, .8f, 1f), .25f, .65f);
             var red = GetOrCreateMaterial("DroneRed", new Color(.85f, .08f, .08f), .25f, .4f);
+            var playerMaterial = GetOrCreateMaterial("Player", new Color(.16f, .52f, .95f), .1f, .35f);
+            GameObject playerPrefab = CreatePlayerPrefab(playerMaterial);
 
             RenderSettings.fog = true;
             RenderSettings.fogColor = new Color(.06f, .09f, .12f);
@@ -124,15 +130,17 @@ namespace SignalHaul.Editor
             CreateLighting(lighting.transform);
             CreateEnvironment(environment.transform, dark, steel, deck, hazard);
 
-            Vector3 spawnPoint = new Vector3(-4.5f, 1.15f, -4.5f);
-            var player = CreatePlayer(gameplay.transform, spawnPoint);
+            Transform[] spawnPoints = CreateSpawnPoints(gameplay.transform);
             CreateExtraction(gameplay.transform, new Vector3(4.5f, .55f, -4.5f), cyan);
             CreateCores(gameplay.transform, cyan);
             CreateDrones(hazards.transform, red);
 
-            var managerObject = CreateEmpty("GameManager", managers.transform);
-            var manager = managerObject.AddComponent<GameManager>();
-            manager.Configure(player, 3, 240f);
+            var gameManagerObject = CreateEmpty("GameManager", managers.transform);
+            gameManagerObject.AddComponent<NetworkObject>();
+            var gameManager = gameManagerObject.AddComponent<GameManager>();
+            gameManager.Configure(3, 240f);
+
+            CreateNetworkManager(managers.transform, playerPrefab, spawnPoints);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -144,7 +152,93 @@ namespace SignalHaul.Editor
             if (SceneView.lastActiveSceneView != null)
                 SceneView.lastActiveSceneView.FrameSelected();
 
-            Debug.Log("SIGNAL HAUL: Main scene rebuilt with real serialized GameObjects.");
+            Debug.Log("SIGNAL HAUL: Main scene rebuilt for 2-4 player LAN co-op with serialized NetworkObjects.");
+        }
+
+        private static void CreateNetworkManager(Transform parent, GameObject playerPrefab, Transform[] spawnPoints)
+        {
+            var networkObject = CreateEmpty("Network Manager", parent);
+            var transport = networkObject.AddComponent<UnityTransport>();
+            var networkManager = networkObject.AddComponent<NetworkManager>();
+
+            networkManager.NetworkConfig.NetworkTransport = transport;
+            networkManager.NetworkConfig.PlayerPrefab = playerPrefab;
+            networkManager.NetworkConfig.ConnectionApproval = true;
+            networkManager.NetworkConfig.EnableSceneManagement = true;
+            networkManager.NetworkConfig.TickRate = 30;
+
+            var session = networkObject.AddComponent<NetworkSessionManager>();
+            session.Configure(networkManager, transport, spawnPoints, 4, 7777);
+
+            EditorUtility.SetDirty(networkManager);
+            EditorUtility.SetDirty(session);
+        }
+
+        private static Transform[] CreateSpawnPoints(Transform parent)
+        {
+            var container = CreateEmpty("Player Spawn Points", parent);
+            Vector3[] positions =
+            {
+                new Vector3(-4.5f, 1.15f, -4.5f),
+                new Vector3(-4.5f, 1.15f, 4.5f),
+                new Vector3(4.5f, 1.15f, 4.5f),
+                new Vector3(0f, 1.15f, -4.5f)
+            };
+
+            var result = new Transform[positions.Length];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                var spawn = CreateEmpty($"Spawn {i + 1}", container.transform);
+                spawn.transform.position = positions[i];
+                result[i] = spawn.transform;
+            }
+
+            return result;
+        }
+
+        private static GameObject CreatePlayerPrefab(Material playerMaterial)
+        {
+            if (!AssetDatabase.IsValidFolder(PrefabsFolder))
+                AssetDatabase.CreateFolder("Assets", "Prefabs");
+
+            if (AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath) != null)
+                AssetDatabase.DeleteAsset(PlayerPrefabPath);
+
+            var playerObject = new GameObject("NetworkPlayer");
+            playerObject.AddComponent<NetworkObject>();
+
+            var characterController = playerObject.AddComponent<CharacterController>();
+            characterController.height = 1.8f;
+            characterController.radius = .35f;
+            characterController.center = new Vector3(0f, .9f, 0f);
+
+            var visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            visual.name = "Body";
+            visual.transform.SetParent(playerObject.transform, false);
+            visual.transform.localPosition = new Vector3(0f, .9f, 0f);
+            visual.transform.localScale = new Vector3(.65f, .9f, .65f);
+            visual.GetComponent<Renderer>().sharedMaterial = playerMaterial;
+            Object.DestroyImmediate(visual.GetComponent<Collider>());
+
+            var cameraObject = CreateEmpty("Camera", playerObject.transform);
+            cameraObject.tag = "MainCamera";
+            cameraObject.transform.localPosition = new Vector3(0f, 1.55f, 0f);
+            var camera = cameraObject.AddComponent<Camera>();
+            camera.fieldOfView = 78f;
+            camera.enabled = false;
+            var listener = cameraObject.AddComponent<AudioListener>();
+            listener.enabled = false;
+
+            var holdPoint = CreateEmpty("HoldPoint", cameraObject.transform);
+            holdPoint.transform.localPosition = new Vector3(0f, -.08f, 2.35f);
+
+            var controller = playerObject.AddComponent<PlayerController>();
+            controller.Configure(camera, holdPoint.transform);
+
+            GameObject prefab = PrefabUtility.SaveAsPrefabAsset(playerObject, PlayerPrefabPath);
+            Object.DestroyImmediate(playerObject);
+            AssetDatabase.SaveAssets();
+            return prefab;
         }
 
         private static void CreateLighting(Transform parent)
@@ -187,31 +281,6 @@ namespace SignalHaul.Editor
             }
         }
 
-        private static PlayerController CreatePlayer(Transform parent, Vector3 spawnPoint)
-        {
-            var playerObject = CreateEmpty("Player", parent);
-            playerObject.transform.position = spawnPoint;
-
-            var characterController = playerObject.AddComponent<CharacterController>();
-            characterController.height = 1.8f;
-            characterController.radius = .35f;
-            characterController.center = new Vector3(0f, .9f, 0f);
-
-            var cameraObject = CreateEmpty("Camera", playerObject.transform);
-            cameraObject.tag = "MainCamera";
-            cameraObject.transform.localPosition = new Vector3(0f, 1.55f, 0f);
-            var camera = cameraObject.AddComponent<Camera>();
-            camera.fieldOfView = 78f;
-            cameraObject.AddComponent<AudioListener>();
-
-            var holdPoint = CreateEmpty("HoldPoint", cameraObject.transform);
-            holdPoint.transform.localPosition = new Vector3(0f, -.08f, 2.35f);
-
-            var controller = playerObject.AddComponent<PlayerController>();
-            controller.Configure(camera, holdPoint.transform, spawnPoint);
-            return controller;
-        }
-
         private static void CreateExtraction(Transform gameplayParent, Vector3 position, Material material)
         {
             var objectRoot = CreateEmpty("Extraction", gameplayParent);
@@ -238,10 +307,13 @@ namespace SignalHaul.Editor
         private static void CreateCore(Transform parent, string name, Vector3 position, Material material)
         {
             var core = CreatePrimitive(PrimitiveType.Sphere, name, parent, position, Vector3.one * .75f, material);
+            core.AddComponent<NetworkObject>();
+
             var rigidbody = core.AddComponent<Rigidbody>();
             rigidbody.mass = 5f;
             rigidbody.linearDamping = .35f;
             rigidbody.angularDamping = .2f;
+
             core.AddComponent<SignalCore>();
         }
 
@@ -255,14 +327,15 @@ namespace SignalHaul.Editor
         private static void CreateDrone(Transform parent, string name, Vector3 position, float orbitRadius, Material material)
         {
             var drone = CreatePrimitive(PrimitiveType.Sphere, name, parent, position, new Vector3(1.25f, .55f, 1.25f), material);
+            drone.AddComponent<NetworkObject>();
             drone.GetComponent<Collider>().isTrigger = true;
 
             var rigidbody = drone.AddComponent<Rigidbody>();
             rigidbody.isKinematic = true;
             rigidbody.useGravity = false;
 
-            var hazard = drone.AddComponent<DroneHazard>();
-            hazard.Configure(orbitRadius);
+            var droneHazard = drone.AddComponent<DroneHazard>();
+            droneHazard.Configure(orbitRadius);
         }
 
         private static GameObject CreateEmpty(string name, Transform parent)
