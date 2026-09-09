@@ -114,6 +114,9 @@ namespace SignalHaul.Editor
             var batteryMaterial = GetOrCreateMaterial("LootBattery", new Color(.95f, .72f, .08f), .4f, .25f);
             var glassMaterial = GetOrCreateMaterial("LootGlassRelic", new Color(.72f, .18f, .95f), .05f, .8f);
             var reactorMaterial = GetOrCreateMaterial("LootReactor", new Color(.45f, .18f, .75f), .75f, .4f);
+            var stalkerMaterial = GetOrCreateMaterial("MonsterStalker", new Color(.16f, .04f, .24f), .1f, .2f);
+            var bruteMaterial = GetOrCreateMaterial("MonsterBrute", new Color(.72f, .12f, .05f), .2f, .16f);
+            var scavengerMaterial = GetOrCreateMaterial("MonsterScavenger", new Color(.08f, .52f, .25f), .15f, .28f);
             GameObject playerPrefab = CreatePlayerPrefab(playerMaterial);
 
             RenderSettings.fog = true;
@@ -139,6 +142,7 @@ namespace SignalHaul.Editor
             CreateCores(gameplay.transform, cyan);
             CreateSalvageLoot(gameplay.transform, cacheMaterial, batteryMaterial, glassMaterial, reactorMaterial);
             CreateDrones(hazards.transform, red);
+            CreateMonsters(hazards.transform, stalkerMaterial, bruteMaterial, scavengerMaterial);
 
             var gameManagerObject = CreateEmpty("GameManager", managers.transform);
             gameManagerObject.AddComponent<NetworkObject>();
@@ -157,7 +161,7 @@ namespace SignalHaul.Editor
             if (SceneView.lastActiveSceneView != null)
                 SceneView.lastActiveSceneView.FrameSelected();
 
-            Debug.Log("SIGNAL HAUL: Main scene rebuilt with multiplayer, random-map support, proximity voice, and weighted breakable salvage.");
+            Debug.Log("SIGNAL HAUL: Main scene rebuilt with multiplayer, random maps, voice, breakable salvage, and server-authoritative monsters.");
         }
 
         private static void CreateNetworkManager(Transform parent, GameObject playerPrefab, Transform[] spawnPoints)
@@ -447,6 +451,62 @@ namespace SignalHaul.Editor
 
             var droneHazard = drone.AddComponent<DroneHazard>();
             droneHazard.Configure(orbitRadius);
+        }
+
+        private static void CreateMonsters(Transform hazardsParent, Material stalkerMaterial, Material bruteMaterial, Material scavengerMaterial)
+        {
+            Transform monsters = CreateEmpty("Monsters", hazardsParent).transform;
+
+            CreateMonster(
+                monsters,
+                "STALKER",
+                PrimitiveType.Capsule,
+                new Vector3(-2.2f, 12f, 2.2f),
+                new Vector3(.82f, 1.15f, .82f),
+                stalkerMaterial,
+                MonsterArchetype.Stalker);
+
+            CreateMonster(
+                monsters,
+                "BRUTE",
+                PrimitiveType.Cube,
+                new Vector3(2.4f, 22f, -1.8f),
+                new Vector3(1.45f, 1.5f, 1.45f),
+                bruteMaterial,
+                MonsterArchetype.Brute);
+
+            CreateMonster(
+                monsters,
+                "SCAVENGER",
+                PrimitiveType.Sphere,
+                new Vector3(-2.4f, 31f, -1.6f),
+                new Vector3(1.15f, .72f, 1.45f),
+                scavengerMaterial,
+                MonsterArchetype.Scavenger);
+        }
+
+        private static void CreateMonster(
+            Transform parent,
+            string name,
+            PrimitiveType primitive,
+            Vector3 position,
+            Vector3 scale,
+            Material material,
+            MonsterArchetype archetype)
+        {
+            GameObject monster = CreatePrimitive(primitive, name, parent, position, scale, material);
+            monster.AddComponent<NetworkObject>();
+
+            Collider collider = monster.GetComponent<Collider>();
+            if (collider != null)
+                collider.isTrigger = true;
+
+            Rigidbody rigidbody = monster.AddComponent<Rigidbody>();
+            rigidbody.isKinematic = true;
+            rigidbody.useGravity = false;
+
+            MonsterController controller = monster.AddComponent<MonsterController>();
+            controller.Configure(archetype);
         }
 
         private static GameObject CreateEmpty(string name, Transform parent)
