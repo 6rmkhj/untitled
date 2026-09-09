@@ -43,6 +43,11 @@ namespace SignalHaul
             }
 
             networkManager.NetworkConfig.ConnectionApproval = true;
+
+            GameObject playerPrefab = networkManager.NetworkConfig.PlayerPrefab;
+            if (playerPrefab != null && !networkManager.NetworkConfig.Prefabs.Contains(playerPrefab))
+                networkManager.AddNetworkPrefab(playerPrefab);
+
             networkManager.ConnectionApprovalCallback += ApprovalCheck;
             networkManager.OnClientConnectedCallback += OnClientConnected;
             networkManager.OnClientDisconnectCallback += OnClientDisconnected;
