@@ -156,6 +156,29 @@ namespace SignalHaul
             body.linearVelocity = Vector3.ClampMagnitude(throwVelocity, 18f);
         }
 
+        public void SetMapSpawnServer(Vector3 position)
+        {
+            if (NetworkManager != null && !NetworkManager.IsServer)
+                return;
+
+            transform.position = position;
+            transform.rotation = Quaternion.identity;
+
+            if (body != null)
+            {
+                body.position = position;
+                body.rotation = Quaternion.identity;
+                body.linearVelocity = Vector3.zero;
+                body.angularVelocity = Vector3.zero;
+            }
+
+            if (IsSpawned && IsServer)
+            {
+                syncedPosition.Value = position;
+                syncedRotation.Value = Quaternion.identity;
+            }
+        }
+
         public void MarkDeliveredServer()
         {
             if (!IsServer || delivered.Value)
