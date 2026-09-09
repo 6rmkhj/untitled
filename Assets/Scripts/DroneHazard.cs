@@ -81,6 +81,19 @@ namespace SignalHaul
             }
         }
 
+        public void SetMapCenterServer(Vector3 position)
+        {
+            if (NetworkManager != null && !NetworkManager.IsServer)
+                return;
+
+            center = position;
+            transform.position = position;
+            hitCooldown = 0f;
+
+            if (IsSpawned && IsServer)
+                syncedPosition.Value = position;
+        }
+
         private PlayerController FindNearestPlayer(out float nearestDistance)
         {
             nearestDistance = float.PositiveInfinity;
