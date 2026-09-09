@@ -38,6 +38,7 @@ namespace SignalHaul
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
+        private float serverTimeLeft;
         private float timerSyncAccumulator;
 
         public void Configure(int coreCount, float duration)
@@ -66,7 +67,8 @@ namespace SignalHaul
                 totalCores = FindObjectsByType<SignalCore>(FindObjectsSortMode.None).Length;
 
             delivered.Value = 0;
-            timeLeft.Value = roundDuration;
+            serverTimeLeft = roundDuration;
+            timeLeft.Value = serverTimeLeft;
             ended.Value = false;
             won.Value = false;
             timerSyncAccumulator = 0f;
@@ -77,16 +79,16 @@ namespace SignalHaul
             if (!IsSpawned || !IsServer || ended.Value)
                 return;
 
-            float nextTime = Mathf.Max(0f, timeLeft.Value - Time.deltaTime);
+            serverTimeLeft = Mathf.Max(0f, serverTimeLeft - Time.deltaTime);
             timerSyncAccumulator += Time.deltaTime;
 
-            if (timerSyncAccumulator >= .1f || nextTime <= 0f)
+            if (timerSyncAccumulator >= .1f || serverTimeLeft <= 0f)
             {
-                timeLeft.Value = nextTime;
+                timeLeft.Value = serverTimeLeft;
                 timerSyncAccumulator = 0f;
             }
 
-            if (nextTime <= 0f)
+            if (serverTimeLeft <= 0f)
                 EndGameServer(false);
         }
 
