@@ -110,6 +110,10 @@ namespace SignalHaul.Editor
             var cyan = GetOrCreateMaterial("SignalCyan", new Color(.05f, .8f, 1f), .25f, .65f);
             var red = GetOrCreateMaterial("DroneRed", new Color(.85f, .08f, .08f), .25f, .4f);
             var playerMaterial = GetOrCreateMaterial("Player", new Color(.16f, .52f, .95f), .1f, .35f);
+            var cacheMaterial = GetOrCreateMaterial("LootDataCache", new Color(.12f, .75f, .42f), .15f, .3f);
+            var batteryMaterial = GetOrCreateMaterial("LootBattery", new Color(.95f, .72f, .08f), .4f, .25f);
+            var glassMaterial = GetOrCreateMaterial("LootGlassRelic", new Color(.72f, .18f, .95f), .05f, .8f);
+            var reactorMaterial = GetOrCreateMaterial("LootReactor", new Color(.45f, .18f, .75f), .75f, .4f);
             GameObject playerPrefab = CreatePlayerPrefab(playerMaterial);
 
             RenderSettings.fog = true;
@@ -133,6 +137,7 @@ namespace SignalHaul.Editor
             Transform[] spawnPoints = CreateSpawnPoints(gameplay.transform);
             CreateExtraction(gameplay.transform, new Vector3(4.5f, .55f, -4.5f), cyan);
             CreateCores(gameplay.transform, cyan);
+            CreateSalvageLoot(gameplay.transform, cacheMaterial, batteryMaterial, glassMaterial, reactorMaterial);
             CreateDrones(hazards.transform, red);
 
             var gameManagerObject = CreateEmpty("GameManager", managers.transform);
@@ -152,7 +157,7 @@ namespace SignalHaul.Editor
             if (SceneView.lastActiveSceneView != null)
                 SceneView.lastActiveSceneView.FrameSelected();
 
-            Debug.Log("SIGNAL HAUL: Main scene rebuilt for 2-4 player LAN co-op with serialized NetworkObjects.");
+            Debug.Log("SIGNAL HAUL: Main scene rebuilt with multiplayer, random-map support, proximity voice, and weighted breakable salvage.");
         }
 
         private static void CreateNetworkManager(Transform parent, GameObject playerPrefab, Transform[] spawnPoints)
@@ -234,6 +239,7 @@ namespace SignalHaul.Editor
 
             var controller = playerObject.AddComponent<PlayerController>();
             controller.Configure(camera, holdPoint.transform);
+            playerObject.AddComponent<ProximityVoiceChat>();
 
             GameObject prefab = PrefabUtility.SaveAsPrefabAsset(playerObject, PlayerPrefabPath);
             Object.DestroyImmediate(playerObject);
@@ -313,8 +319,113 @@ namespace SignalHaul.Editor
             rigidbody.mass = 5f;
             rigidbody.linearDamping = .35f;
             rigidbody.angularDamping = .2f;
+            rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
             core.AddComponent<SignalCore>();
+            PhysicsLoot loot = core.GetComponent<PhysicsLoot>();
+            loot.Configure("SIGNAL CORE", 1000, 5f, 120f, 7.5f, 1.1f, 1, 1, true);
+        }
+
+        private static void CreateSalvageLoot(Transform gameplayParent, Material cache, Material battery, Material glass, Material reactor)
+        {
+            var lootRoot = CreateEmpty("Salvage Loot", gameplayParent);
+
+            CreateLoot(
+                PrimitiveType.Cube,
+                lootRoot.transform,
+                "DATA CACHE",
+                new Vector3(-2.2f, 1.15f, -1.8f),
+                new Vector3(.9f, .65f, .65f),
+                cache,
+                220,
+                4f,
+                65f,
+                6.5f,
+                1.4f,
+                1,
+                1);
+
+            CreateLoot(
+                PrimitiveType.Cube,
+                lootRoot.transform,
+                "INDUSTRIAL BATTERY",
+                new Vector3(2.1f, 1.25f, 1.7f),
+                new Vector3(1.15f, .72f, .72f),
+                battery,
+                420,
+                14f,
+                120f,
+                8.5f,
+                1f,
+                1,
+                1);
+
+            CreateLoot(
+                PrimitiveType.Sphere,
+                lootRoot.transform,
+                "GLASS RELIC",
+                new Vector3(-1.8f, 1.25f, 2.3f),
+                Vector3.one * .72f,
+                glass,
+                700,
+                3.5f,
+                35f,
+                3.5f,
+                2.4f,
+                1,
+                1);
+
+            CreateLoot(
+                PrimitiveType.Cylinder,
+                lootRoot.transform,
+                "REACTOR ASSEMBLY",
+                new Vector3(2.5f, 1.3f, -1.8f),
+                new Vector3(1.15f, .75f, 1.15f),
+                reactor,
+                1100,
+                30f,
+                180f,
+                9.5f,
+                .9f,
+                2,
+                2);
+        }
+
+        private static void CreateLoot(
+            PrimitiveType primitive,
+            Transform parent,
+            string displayName,
+            Vector3 position,
+            Vector3 scale,
+            Material material,
+            int value,
+            float weight,
+            float durability,
+            float impactThreshold,
+            float impactDamageMultiplier,
+            int requiredCarriers,
+            int maxCarriers)
+        {
+            GameObject item = CreatePrimitive(primitive, displayName, parent, position, scale, material);
+            item.AddComponent<NetworkObject>();
+
+            Rigidbody rigidbody = item.AddComponent<Rigidbody>();
+            rigidbody.mass = weight;
+            rigidbody.linearDamping = .35f;
+            rigidbody.angularDamping = .2f;
+            rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            PhysicsLoot loot = item.AddComponent<PhysicsLoot>();
+            loot.Configure(
+                displayName,
+                value,
+                weight,
+                durability,
+                impactThreshold,
+                impactDamageMultiplier,
+                requiredCarriers,
+                maxCarriers,
+                false);
         }
 
         private static void CreateDrones(Transform parent, Material material)
