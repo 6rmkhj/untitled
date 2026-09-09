@@ -1,3 +1,4 @@
+using Unity.Netcode;
 using UnityEngine;
 
 namespace SignalHaul
@@ -6,9 +7,12 @@ namespace SignalHaul
     {
         private void OnTriggerEnter(Collider other)
         {
-            var core = other.GetComponent<SignalCore>();
+            if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsServer)
+                return;
+
+            SignalCore core = other.GetComponentInParent<SignalCore>();
             if (core != null && GameManager.Instance != null)
-                GameManager.Instance.DeliverCore(core);
+                GameManager.Instance.DeliverCoreServer(core);
         }
     }
 }
