@@ -20,6 +20,7 @@ namespace SignalHaul
         public float Stamina { get; private set; } = 100f;
         public string ContextPrompt { get; private set; } = string.Empty;
         public float SyncedPitch => syncedPitch.Value;
+        public PhysicsLoot HeldItem => heldItem;
 
         private readonly NetworkVariable<Vector3> syncedPosition = new(
             Vector3.zero,
@@ -44,7 +45,7 @@ namespace SignalHaul
         private CharacterController controller;
         private AudioListener audioListener;
         private Renderer[] bodyRenderers;
-        private SignalCore heldCore;
+        private PhysicsLoot heldItem;
         private Vector3 spawnPoint;
         private float pitch;
         private float verticalVelocity;
@@ -144,7 +145,7 @@ namespace SignalHaul
             }
 
             respawnCooldown -= Time.deltaTime;
-            UpdateHeldCoreState();
+            UpdateHeldItemState();
             Look();
             Move();
             HandleGrabInput();
@@ -217,29 +218,39 @@ namespace SignalHaul
             Vector2 input = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
             input = Vector2.ClampMagnitude(input, 1f);
 
-            bool sprint = Input.GetKey(KeyCode.LeftShift) && Stamina > 1f && input.y > .1f;
-            float speed = sprint ? 7.2f : 4.6f;
+            float carrySpeed = heldItem != null ? heldItem.GetCarrySpeedMultiplier(OwnerClientId) : 1f;
+            float carryStamina = heldItem != null ? heldItem.GetStaminaDrainMultiplier(OwnerClientId) : 1f;
+            bool enoughCarriers = heldItem == null || heldItem.HasRequiredCarriers;
+
+            bool sprint = Input.GetKey(KeyCode.LeftShift) && Stamina > 1f && input.y > .1f && enoughCarriers;
+            float speed = (sprint ? 7.2f : 4.6f) * carrySpeed;
 
             if (sprint)
-                Stamina = Mathf.Max(0f, Stamina - 22f * Time.deltaTime);
+            {
+                Stamina = Mathf.Max(0f, Stamina - 22f * carryStamina * Time.deltaTime);
+            }
             else
-                Stamina = Mathf.Min(100f, Stamina + (grounded ? 18f : 8f) * Time.deltaTime);
+            {
+                float regen = (grounded ? 18f : 8f) / Mathf.Sqrt(carryStamina);
+                Stamina = Mathf.Min(100f, Stamina + regen * Time.deltaTime);
+            }
 
             bool climb = false;
-            if (!grounded && Input.GetKey(KeyCode.Space) && Stamina > 0f)
+            bool canClimbWithLoad = heldItem == null || heldItem.CanClimb(OwnerClientId);
+            if (!grounded && canClimbWithLoad && Input.GetKey(KeyCode.Space) && Stamina > 0f)
             {
                 if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 1.25f, ~0, QueryTriggerInteraction.Ignore) && hit.rigidbody == null)
                 {
                     climb = true;
                     verticalVelocity = 3.5f;
-                    Stamina = Mathf.Max(0f, Stamina - 28f * Time.deltaTime);
+                    Stamina = Mathf.Max(0f, Stamina - 28f * carryStamina * Time.deltaTime);
                 }
             }
 
-            if (grounded && Input.GetKeyDown(KeyCode.Space) && Stamina > 8f)
+            if (grounded && enoughCarriers && Input.GetKeyDown(KeyCode.Space) && Stamina > 8f * carryStamina)
             {
                 verticalVelocity = 7.2f;
-                Stamina -= 8f;
+                Stamina -= 8f * carryStamina;
             }
 
             if (!climb)
@@ -254,107 +265,117 @@ namespace SignalHaul
         {
             if (Input.GetKeyDown(KeyCode.E))
             {
-                if (heldCore != null)
-                    ReleaseHeldCore(Vector3.zero);
+                if (heldItem != null)
+                    ReleaseHeldItem(Vector3.zero);
                 else
                     TryGrab();
             }
 
-            if (Input.GetKeyDown(KeyCode.Q) && heldCore != null)
+            if (Input.GetKeyDown(KeyCode.Q) && heldItem != null)
             {
-                Vector3 throwVelocity = playerCamera.transform.forward * 12f + Vector3.up * 2f;
-                ReleaseHeldCore(throwVelocity);
+                Vector3 throwVelocity = heldItem.CanThrow(OwnerClientId)
+                    ? playerCamera.transform.forward * 12f + Vector3.up * 2f
+                    : Vector3.zero;
+                ReleaseHeldItem(throwVelocity);
             }
         }
 
         private void TryGrab()
         {
-            if (!Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.3f, ~0, QueryTriggerInteraction.Ignore))
+            if (!Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.8f, ~0, QueryTriggerInteraction.Ignore))
                 return;
 
-            var core = hit.collider.GetComponentInParent<SignalCore>();
-            if (core == null || !core.IsSpawned || core.Delivered)
+            PhysicsLoot item = hit.collider.GetComponentInParent<PhysicsLoot>();
+            if (item == null || !item.IsSpawned || item.Delivered || item.Broken)
                 return;
 
-            heldCore = core;
-            pendingGrabUntil = Time.time + .4f;
-            RequestGrabRpc(core.NetworkObjectId);
+            heldItem = item;
+            pendingGrabUntil = Time.time + .5f;
+            RequestGrabRpc(item.NetworkObjectId);
         }
 
-        private void UpdateHeldCoreState()
+        private void UpdateHeldItemState()
         {
-            if (heldCore == null)
+            if (heldItem == null)
                 return;
 
-            if (heldCore.Delivered)
+            if (heldItem.Delivered || heldItem.Broken)
             {
-                heldCore = null;
+                heldItem = null;
                 return;
             }
 
-            if (!heldCore.IsHeldBy(OwnerClientId) && Time.time > pendingGrabUntil)
-                heldCore = null;
+            if (!heldItem.IsHeldBy(OwnerClientId) && Time.time > pendingGrabUntil)
+                heldItem = null;
         }
 
-        private void ReleaseHeldCore(Vector3 throwVelocity)
+        private void ReleaseHeldItem(Vector3 throwVelocity)
         {
-            if (heldCore == null)
+            if (heldItem == null)
                 return;
 
-            ulong id = heldCore.NetworkObjectId;
-            heldCore = null;
+            ulong id = heldItem.NetworkObjectId;
+            heldItem = null;
             RequestReleaseRpc(id, throwVelocity);
         }
 
         public void Drop()
         {
             if (IsOwner)
-                ReleaseHeldCore(Vector3.zero);
+                ReleaseHeldItem(Vector3.zero);
         }
 
         [Rpc(SendTo.Server)]
-        private void RequestGrabRpc(ulong coreNetworkObjectId, RpcParams rpcParams = default)
+        private void RequestGrabRpc(ulong itemNetworkObjectId, RpcParams rpcParams = default)
         {
             if (rpcParams.Receive.SenderClientId != OwnerClientId)
                 return;
 
-            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(coreNetworkObjectId, out NetworkObject networkObject) &&
-                networkObject.TryGetComponent(out SignalCore core))
+            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(itemNetworkObjectId, out NetworkObject networkObject) &&
+                networkObject.TryGetComponent(out PhysicsLoot item))
             {
-                core.TryGrabServer(OwnerClientId);
+                item.TryGrabServer(OwnerClientId);
             }
         }
 
         [Rpc(SendTo.Server)]
-        private void RequestReleaseRpc(ulong coreNetworkObjectId, Vector3 throwVelocity, RpcParams rpcParams = default)
+        private void RequestReleaseRpc(ulong itemNetworkObjectId, Vector3 throwVelocity, RpcParams rpcParams = default)
         {
             if (rpcParams.Receive.SenderClientId != OwnerClientId)
                 return;
 
-            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(coreNetworkObjectId, out NetworkObject networkObject) &&
-                networkObject.TryGetComponent(out SignalCore core))
+            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(itemNetworkObjectId, out NetworkObject networkObject) &&
+                networkObject.TryGetComponent(out PhysicsLoot item))
             {
-                core.ReleaseServer(OwnerClientId, throwVelocity);
+                item.ReleaseServer(OwnerClientId, throwVelocity);
             }
         }
 
         private void UpdatePrompt()
         {
-            if (heldCore != null)
+            if (heldItem != null)
             {
-                ContextPrompt = "E 놓기  /  Q 던지기";
+                string carryState = heldItem.HasRequiredCarriers
+                    ? $"운반 {heldItem.CarrierCount}/{heldItem.RequiredCarriers}명"
+                    : $"도움 필요 {heldItem.CarrierCount}/{heldItem.RequiredCarriers}명";
+                string action = heldItem.CanThrow(OwnerClientId) ? "E 놓기 / Q 던지기" : "E 또는 Q 놓기";
+                ContextPrompt = $"{heldItem.DisplayName}  {heldItem.Weight:0.#}kg  ${heldItem.CurrentValue}  내구도 {Mathf.CeilToInt(heldItem.Durability)}/{Mathf.CeilToInt(heldItem.MaxDurability)}\n{carryState}  |  {action}";
                 return;
             }
 
-            if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.3f, ~0, QueryTriggerInteraction.Ignore) &&
-                hit.collider.GetComponentInParent<SignalCore>() is SignalCore core && !core.Delivered)
+            if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.8f, ~0, QueryTriggerInteraction.Ignore))
             {
-                ContextPrompt = "E SIGNAL CORE 잡기";
+                PhysicsLoot item = hit.collider.GetComponentInParent<PhysicsLoot>();
+                if (item != null && !item.Delivered && !item.Broken)
+                {
+                    string crew = item.RequiredCarriers > 1 ? $"  {item.CarrierCount}/{item.RequiredCarriers}명 필요" : string.Empty;
+                    string full = item.CarrierCount >= item.MaxCarriers ? "  [운반 인원 가득 참]" : string.Empty;
+                    ContextPrompt = $"E {item.DisplayName} 잡기  |  {item.Weight:0.#}kg  ${item.CurrentValue}  내구도 {Mathf.CeilToInt(item.Durability)}/{Mathf.CeilToInt(item.MaxDurability)}{crew}{full}";
+                    return;
+                }
             }
-            else
-            {
-                ContextPrompt = string.Empty;
-            }
+
+            ContextPrompt = string.Empty;
         }
 
         private void RequestDamage(float amount)
@@ -380,7 +401,7 @@ namespace SignalHaul
                 return;
 
             health.Value = Mathf.Max(0f, health.Value - amount);
-            ReleaseAnyHeldCoreServer();
+            ReleaseAnyHeldItemServer();
 
             if (health.Value <= 0f)
                 GameManager.Instance.EndGameServer(false);
@@ -392,7 +413,7 @@ namespace SignalHaul
                 return;
 
             respawnCooldown = 1f;
-            ReleaseHeldCore(Vector3.zero);
+            ReleaseHeldItem(Vector3.zero);
             controller.enabled = false;
             transform.position = spawnPoint;
             controller.enabled = true;
@@ -412,18 +433,15 @@ namespace SignalHaul
             ApplyDamageServer(damage);
         }
 
-        private void ReleaseAnyHeldCoreServer()
+        private void ReleaseAnyHeldItemServer()
         {
             if (!IsServer || NetworkManager == null)
                 return;
 
             foreach (NetworkObject spawnedObject in NetworkManager.SpawnManager.SpawnedObjectsList)
             {
-                if (spawnedObject.TryGetComponent(out SignalCore core) && core.IsHeldBy(OwnerClientId))
-                {
-                    core.ReleaseServer(OwnerClientId, Vector3.zero);
-                    return;
-                }
+                if (spawnedObject.TryGetComponent(out PhysicsLoot item) && item.IsHeldBy(OwnerClientId))
+                    item.ReleaseServer(OwnerClientId, Vector3.zero);
             }
         }
 
