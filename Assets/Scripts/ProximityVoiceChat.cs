@@ -36,6 +36,7 @@ namespace SignalHaul
         private uint outgoingSequence;
         private uint lastReceivedSequence;
         private bool hasReceivedSequence;
+        private float serverNextVoiceNoiseAt;
 
         private readonly float[] captureSamples = new float[SamplesPerPacket];
         private readonly byte[] encodedPacket = new byte[BytesPerPacket];
@@ -255,6 +256,17 @@ namespace SignalHaul
             if (rpcParams.Receive.SenderClientId != OwnerClientId)
                 return;
 
+            if (Time.time >= serverNextVoiceNoiseAt)
+            {
+                float amplitude = EstimatePcmAmplitude(payload);
+                if (amplitude > .025f)
+                {
+                    float radius = Mathf.Lerp(9f, 22f, Mathf.InverseLerp(.025f, .32f, amplitude));
+                    MonsterNoiseSystem.EmitServer(transform.position, radius, OwnerClientId, MonsterNoiseKind.Voice);
+                    serverNextVoiceNoiseAt = Time.time + .22f;
+                }
+            }
+
             RelayVoiceRpc(sequence, payload);
         }
 
@@ -329,6 +341,22 @@ namespace SignalHaul
                 destination[byteIndex] = (byte)(value & 0xff);
                 destination[byteIndex + 1] = (byte)((value >> 8) & 0xff);
             }
+        }
+
+        private static float EstimatePcmAmplitude(byte[] payload)
+        {
+            long sum = 0;
+            int sampleCount = payload.Length / 2;
+            if (sampleCount <= 0)
+                return 0f;
+
+            for (int i = 0; i < payload.Length; i += 2)
+            {
+                short sample = (short)(payload[i] | (payload[i + 1] << 8));
+                sum += Mathf.Abs((int)sample);
+            }
+
+            return Mathf.Clamp01(sum / (float)sampleCount / 32768f);
         }
 
         private void OnGUI()

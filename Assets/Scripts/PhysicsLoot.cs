@@ -208,6 +208,12 @@ namespace SignalHaul
                 return;
 
             float impactSpeed = collision.relativeVelocity.magnitude;
+            if (impactSpeed > 3f)
+            {
+                float noiseRadius = Mathf.Clamp(impactSpeed * 1.6f + weight * .12f, 4f, 24f);
+                MonsterNoiseSystem.EmitServer(body.position, noiseRadius, ulong.MaxValue, MonsterNoiseKind.LootImpact);
+            }
+
             if (impactSpeed <= impactThreshold)
                 return;
 
@@ -336,6 +342,7 @@ namespace SignalHaul
             {
                 float weightScale = Mathf.Clamp(10f / Mathf.Max(1f, weight), .35f, 1f);
                 body.linearVelocity = Vector3.ClampMagnitude(throwVelocity * weightScale, 16f);
+                MonsterNoiseSystem.EmitServer(body.position, Mathf.Clamp(8f + weight * .25f, 8f, 18f), clientId, MonsterNoiseKind.LootImpact);
             }
         }
 
@@ -401,6 +408,34 @@ namespace SignalHaul
             }
         }
 
+        public void ApplyMonsterImpactServer(float damage, Vector3 impulse)
+        {
+            if (!IsServer || Delivered || Broken)
+                return;
+
+            ClearCarriersServer();
+            body.isKinematic = false;
+            body.useGravity = true;
+            body.linearDamping = .35f;
+            body.angularDamping = .2f;
+
+            ApplyDamageServer(Mathf.Max(0f, damage));
+            if (Broken)
+                return;
+
+            Vector3 velocityChange = Vector3.ClampMagnitude(impulse, 14f);
+            body.linearVelocity = Vector3.ClampMagnitude(body.linearVelocity + velocityChange, 18f);
+            syncedPosition.Value = body.position;
+            syncedRotation.Value = body.rotation;
+            serverSpawnGraceUntil = Time.time + .15f;
+
+            MonsterNoiseSystem.EmitServer(
+                body.position,
+                Mathf.Clamp(10f + velocityChange.magnitude * .7f, 10f, 22f),
+                ulong.MaxValue,
+                MonsterNoiseKind.LootImpact);
+        }
+
         public bool MarkDeliveredServer()
         {
             if (!IsServer || Delivered || Broken)
@@ -437,6 +472,8 @@ namespace SignalHaul
             body.isKinematic = true;
             ApplyVisibilityState();
             SpawnBreakFragments();
+
+            MonsterNoiseSystem.EmitServer(body.position, 18f, ulong.MaxValue, MonsterNoiseKind.LootImpact);
 
             if (GameManager.Instance != null)
                 GameManager.Instance.ReportLootBrokenServer(this);

@@ -47,6 +47,10 @@ namespace SignalHaul
         private Renderer[] bodyRenderers;
         private PhysicsLoot heldItem;
         private Vector3 spawnPoint;
+        private Vector3 externalVelocity;
+        private Vector3 serverLastSubmittedPosition;
+        private float serverLastSubmittedTime;
+        private float serverNextMovementNoiseAt;
         private float pitch;
         private float verticalVelocity;
         private float fallPeak;
@@ -87,6 +91,9 @@ namespace SignalHaul
                 syncedRotation.Value = transform.rotation;
                 syncedPitch.Value = 0f;
                 health.Value = 100f;
+                serverLastSubmittedPosition = transform.position;
+                serverLastSubmittedTime = Time.time;
+                serverNextMovementNoiseAt = Time.time + .35f;
             }
 
             controller.enabled = IsOwner;
@@ -186,6 +193,18 @@ namespace SignalHaul
             if (rpcParams.Receive.SenderClientId != OwnerClientId)
                 return;
 
+            float elapsed = Mathf.Max(.02f, Time.time - serverLastSubmittedTime);
+            float speed = Vector3.Distance(position, serverLastSubmittedPosition) / elapsed;
+
+            if (Time.time >= serverNextMovementNoiseAt && speed > 1.25f)
+            {
+                float radius = speed > 5.4f ? 11f : 5.5f;
+                MonsterNoiseSystem.EmitServer(position, radius, OwnerClientId, MonsterNoiseKind.Movement);
+                serverNextMovementNoiseAt = Time.time + (speed > 5.4f ? .28f : .5f);
+            }
+
+            serverLastSubmittedPosition = position;
+            serverLastSubmittedTime = Time.time;
             syncedPosition.Value = position;
             syncedRotation.Value = rotation;
             syncedPitch.Value = Mathf.Clamp(viewPitch, -85f, 85f);
@@ -258,7 +277,8 @@ namespace SignalHaul
 
             fallPeak = Mathf.Min(fallPeak, verticalVelocity);
             Vector3 horizontal = (transform.right * input.x + transform.forward * input.y) * speed;
-            controller.Move((horizontal + Vector3.up * verticalVelocity) * Time.deltaTime);
+            controller.Move((horizontal + externalVelocity + Vector3.up * verticalVelocity) * Time.deltaTime);
+            externalVelocity = Vector3.MoveTowards(externalVelocity, Vector3.zero, 9f * Time.deltaTime);
         }
 
         private void HandleGrabInput()
@@ -407,6 +427,23 @@ namespace SignalHaul
                 GameManager.Instance.EndGameServer(false);
         }
 
+        public void ApplyMonsterHitServer(float damage, Vector3 knockback)
+        {
+            if (!IsServer || !IsSpawned)
+                return;
+
+            ApplyDamageServer(Mathf.Clamp(damage, 0f, 60f));
+            ReceiveMonsterHitRpc(Vector3.ClampMagnitude(knockback, 16f));
+        }
+
+        [Rpc(SendTo.Owner)]
+        private void ReceiveMonsterHitRpc(Vector3 knockback)
+        {
+            heldItem = null;
+            externalVelocity += new Vector3(knockback.x, 0f, knockback.z);
+            verticalVelocity = Mathf.Max(verticalVelocity, knockback.y);
+        }
+
         public void RespawnWithDamage(float damage)
         {
             if (!IsOwner || respawnCooldown > 0f)
@@ -419,6 +456,7 @@ namespace SignalHaul
             controller.enabled = true;
             verticalVelocity = 0f;
             fallPeak = 0f;
+            externalVelocity = Vector3.zero;
             RequestRespawnRpc(Mathf.Clamp(damage, 0f, 60f));
         }
 
