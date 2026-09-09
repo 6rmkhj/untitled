@@ -1,8 +1,10 @@
 #if UNITY_EDITOR
 using System.IO;
+using SignalHaul;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace SignalHaul.Editor
 {
@@ -10,6 +12,7 @@ namespace SignalHaul.Editor
     public static class ProjectSetup
     {
         private const string ScenePath = "Assets/Scenes/Main.unity";
+        private const string RootName = "SIGNAL_HAUL";
 
         static ProjectSetup()
         {
@@ -18,13 +21,54 @@ namespace SignalHaul.Editor
 
         private static void EnsureScene()
         {
-            if (Application.isPlaying || File.Exists(ScenePath)) return;
+            if (Application.isPlaying) return;
+
             Directory.CreateDirectory("Assets/Scenes");
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            EditorSceneManager.SaveScene(scene, ScenePath);
+
+            Scene scene;
+            if (!File.Exists(ScenePath))
+            {
+                scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+            else if (SceneManager.GetActiveScene().path == ScenePath)
+            {
+                scene = SceneManager.GetActiveScene();
+            }
+            else
+            {
+                scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            }
+
+            bool changed = false;
+            var root = GameObject.Find(RootName);
+            if (root == null)
+            {
+                root = new GameObject(RootName);
+                changed = true;
+            }
+
+            if (root.GetComponent<GameManager>() == null)
+            {
+                root.AddComponent<GameManager>();
+                changed = true;
+            }
+
+            if (root.GetComponent<SignalHaulScenePreview>() == null)
+            {
+                root.AddComponent<SignalHaulScenePreview>();
+                changed = true;
+            }
+
+            if (changed || scene.path != ScenePath)
+            {
+                EditorSceneManager.MarkSceneDirty(scene);
+                EditorSceneManager.SaveScene(scene, ScenePath);
+            }
+
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
-            Debug.Log("SIGNAL HAUL: Main scene created. Press Play to begin.");
+            Selection.activeGameObject = root;
+            EditorGUIUtility.PingObject(root);
         }
     }
 }
