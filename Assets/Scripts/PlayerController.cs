@@ -62,6 +62,7 @@ namespace SignalHaul
         private void Awake()
         {
             controller = GetComponent<CharacterController>();
+            controller.enabled = false;
 
             if (playerCamera == null)
                 playerCamera = GetComponentInChildren<Camera>(true);
@@ -110,8 +111,18 @@ namespace SignalHaul
 
         public override void OnNetworkDespawn()
         {
-            if (LocalPlayer == this)
-                LocalPlayer = null;
+            controller.enabled = false;
+            if (playerCamera != null)
+                playerCamera.enabled = false;
+            if (audioListener != null)
+                audioListener.enabled = false;
+
+            if (LocalPlayer != this)
+                return;
+
+            LocalPlayer = null;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
 
         private void Update()
