@@ -182,6 +182,26 @@ namespace SignalHaul
                 cores[i].SetMapSpawnServer(levelCenters[levelIndex] + Vector3.up * 1.15f);
             }
 
+            PhysicsLoot[] allLoot = FindObjectsByType<PhysicsLoot>(FindObjectsSortMode.None);
+            var bonusLoot = new List<PhysicsLoot>();
+            foreach (PhysicsLoot item in allLoot)
+            {
+                if (item != null && !item.IsRequiredObjective)
+                    bonusLoot.Add(item);
+            }
+
+            bonusLoot.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+            for (int i = 0; i < bonusLoot.Count; i++)
+            {
+                int levelIndex = Mathf.Clamp(
+                    Mathf.RoundToInt((i + 1f) / (bonusLoot.Count + 1f) * (levelCenters.Count - 2)),
+                    1,
+                    levelCenters.Count - 2);
+                float side = i % 2 == 0 ? -1f : 1f;
+                Vector3 offset = new Vector3(side * 1.25f, 1.05f, i % 3 == 0 ? .8f : -.8f);
+                bonusLoot[i].SetMapSpawnServer(levelCenters[levelIndex] + offset);
+            }
+
             DroneHazard[] drones = FindObjectsByType<DroneHazard>(FindObjectsSortMode.None);
             Array.Sort(drones, (a, b) => string.CompareOrdinal(a.name, b.name));
 
