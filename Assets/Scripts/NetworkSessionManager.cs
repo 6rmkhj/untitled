@@ -27,7 +27,7 @@ namespace SignalHaul
             port = gamePort;
         }
 
-        private void Awake()
+        private void Start()
         {
             if (networkManager == null)
                 networkManager = GetComponent<NetworkManager>();
