@@ -4,7 +4,7 @@ namespace SignalHaul
 {
     public sealed class SignalHaulSceneMarker : MonoBehaviour
     {
-        public const int CurrentVersion = 7;
+        public const int CurrentVersion = 8;
 
         [SerializeField, HideInInspector] private int sceneVersion = CurrentVersion;
         public int SceneVersion => sceneVersion;
