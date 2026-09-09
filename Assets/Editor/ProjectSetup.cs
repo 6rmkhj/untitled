@@ -149,7 +149,8 @@ namespace SignalHaul.Editor
             var gameManager = gameManagerObject.AddComponent<GameManager>();
             gameManager.Configure(3, 240f);
 
-            CreateNetworkManager(managers.transform, playerPrefab, spawnPoints);
+            // NetworkManager itself must be a scene-root GameObject in NGO.
+            CreateNetworkManager(null, playerPrefab, spawnPoints);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene, ScenePath);
