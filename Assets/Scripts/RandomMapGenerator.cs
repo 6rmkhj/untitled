@@ -213,6 +213,20 @@ namespace SignalHaul
                     levelCenters.Count - 1);
                 drones[i].SetMapCenterServer(levelCenters[levelIndex] + Vector3.up * 2.3f);
             }
+
+            MonsterController[] monsters = FindObjectsByType<MonsterController>(FindObjectsSortMode.None);
+            Array.Sort(monsters, (a, b) => string.CompareOrdinal(a.name, b.name));
+
+            for (int i = 0; i < monsters.Length; i++)
+            {
+                int levelIndex = Mathf.Clamp(
+                    Mathf.RoundToInt((i + 1f) / (monsters.Length + 1f) * (levelCenters.Count - 1)),
+                    1,
+                    levelCenters.Count - 1);
+                float side = i % 2 == 0 ? 2.4f : -2.4f;
+                Vector3 position = levelCenters[levelIndex] + new Vector3(side, 2.2f, i % 2 == 0 ? -1.6f : 1.6f);
+                monsters[i].SetMapHomeServer(position);
+            }
         }
 
         private void ClearGeneratedChildren()
