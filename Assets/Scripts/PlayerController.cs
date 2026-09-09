@@ -1,31 +1,62 @@
+using Unity.Netcode;
 using UnityEngine;
 
 namespace SignalHaul
 {
-    [RequireComponent(typeof(CharacterController))]
-    public sealed class PlayerController : MonoBehaviour
+    [RequireComponent(typeof(CharacterController), typeof(NetworkObject))]
+    public sealed class PlayerController : NetworkBehaviour
     {
+        public static PlayerController LocalPlayer { get; private set; }
+
         [Header("Scene References")]
         [SerializeField] private Camera playerCamera;
         [SerializeField] private Transform holdPoint;
-        [SerializeField] private Vector3 spawnPoint;
 
-        public float Health { get; private set; } = 100f;
+        [Header("Network")]
+        [SerializeField, Min(.03f)] private float syncInterval = .08f;
+        [SerializeField, Min(1f)] private float remoteLerpSpeed = 16f;
+
+        public float Health => health.Value;
         public float Stamina { get; private set; } = 100f;
-        public string ContextPrompt { get; private set; }
+        public string ContextPrompt { get; private set; } = string.Empty;
+        public float SyncedPitch => syncedPitch.Value;
+
+        private readonly NetworkVariable<Vector3> syncedPosition = new(
+            Vector3.zero,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<Quaternion> syncedRotation = new(
+            Quaternion.identity,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<float> syncedPitch = new(
+            0f,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<float> health = new(
+            100f,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
 
         private CharacterController controller;
-        private Rigidbody heldBody;
+        private AudioListener audioListener;
+        private Renderer[] bodyRenderers;
+        private SignalCore heldCore;
+        private Vector3 spawnPoint;
         private float pitch;
         private float verticalVelocity;
         private float fallPeak;
-        private float damageCooldown;
+        private float syncTimer;
+        private float pendingGrabUntil;
+        private float respawnCooldown;
 
-        public void Configure(Camera cameraReference, Transform holdPointReference, Vector3 initialSpawnPoint)
+        public void Configure(Camera cameraReference, Transform holdPointReference)
         {
             playerCamera = cameraReference;
             holdPoint = holdPointReference;
-            spawnPoint = initialSpawnPoint;
         }
 
         private void Awake()
@@ -37,24 +68,80 @@ namespace SignalHaul
 
             if (holdPoint == null && playerCamera != null)
                 holdPoint = playerCamera.transform.Find("HoldPoint");
+
+            if (playerCamera != null)
+                audioListener = playerCamera.GetComponent<AudioListener>();
+
+            bodyRenderers = GetComponentsInChildren<Renderer>(true);
         }
 
-        private void Start()
+        public override void OnNetworkSpawn()
         {
+            spawnPoint = transform.position;
+
+            if (IsServer)
+            {
+                syncedPosition.Value = transform.position;
+                syncedRotation.Value = transform.rotation;
+                syncedPitch.Value = 0f;
+                health.Value = 100f;
+            }
+
+            controller.enabled = IsOwner;
+
+            if (playerCamera != null)
+                playerCamera.enabled = IsOwner;
+            if (audioListener != null)
+                audioListener.enabled = IsOwner;
+
+            if (bodyRenderers != null)
+            {
+                foreach (Renderer bodyRenderer in bodyRenderers)
+                    bodyRenderer.enabled = !IsOwner;
+            }
+
+            if (!IsOwner)
+                return;
+
+            LocalPlayer = this;
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
         }
 
+        public override void OnNetworkDespawn()
+        {
+            if (LocalPlayer == this)
+                LocalPlayer = null;
+        }
+
         private void Update()
         {
-            if (GameManager.Instance == null || GameManager.Instance.Ended || playerCamera == null)
+            if (!IsSpawned)
                 return;
 
-            damageCooldown -= Time.deltaTime;
+            if (!IsOwner)
+            {
+                UpdateRemoteTransform();
+                return;
+            }
+
+            if (GameManager.Instance == null || GameManager.Instance.Ended || playerCamera == null)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                return;
+            }
+
+            respawnCooldown -= Time.deltaTime;
+            UpdateHeldCoreState();
             Look();
             Move();
             HandleGrabInput();
             UpdatePrompt();
+            SendTransformState();
+
+            if (transform.position.y < -18f && respawnCooldown <= 0f)
+                RespawnWithDamage(25f);
 
             if (Input.GetKeyDown(KeyCode.Escape))
             {
@@ -64,17 +151,32 @@ namespace SignalHaul
             }
         }
 
-        private void FixedUpdate()
+        private void UpdateRemoteTransform()
         {
-            if (heldBody == null || holdPoint == null)
+            float t = 1f - Mathf.Exp(-remoteLerpSpeed * Time.deltaTime);
+            transform.position = Vector3.Lerp(transform.position, syncedPosition.Value, t);
+            transform.rotation = Quaternion.Slerp(transform.rotation, syncedRotation.Value, t);
+        }
+
+        private void SendTransformState()
+        {
+            syncTimer -= Time.deltaTime;
+            if (syncTimer > 0f)
                 return;
 
-            Vector3 delta = holdPoint.position - heldBody.position;
-            heldBody.linearVelocity = Vector3.Lerp(heldBody.linearVelocity, delta * 11f, .42f);
-            heldBody.angularVelocity *= .82f;
+            syncTimer = syncInterval;
+            SubmitTransformRpc(transform.position, transform.rotation, pitch);
+        }
 
-            if (delta.magnitude > 5f)
-                Drop();
+        [Rpc(SendTo.Server)]
+        private void SubmitTransformRpc(Vector3 position, Quaternion rotation, float viewPitch, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId)
+                return;
+
+            syncedPosition.Value = position;
+            syncedRotation.Value = rotation;
+            syncedPitch.Value = Mathf.Clamp(viewPitch, -85f, 85f);
         }
 
         private void Look()
@@ -95,7 +197,7 @@ namespace SignalHaul
             if (grounded && verticalVelocity < 0f)
             {
                 if (fallPeak < -16f)
-                    TakeDamage(Mathf.Clamp((-fallPeak - 15f) * 3.2f, 5f, 55f));
+                    RequestDamage(Mathf.Clamp((-fallPeak - 15f) * 3.2f, 5f, 55f));
 
                 fallPeak = 0f;
                 verticalVelocity = -2f;
@@ -141,17 +243,16 @@ namespace SignalHaul
         {
             if (Input.GetKeyDown(KeyCode.E))
             {
-                if (heldBody != null)
-                    Drop();
+                if (heldCore != null)
+                    ReleaseHeldCore(Vector3.zero);
                 else
                     TryGrab();
             }
 
-            if (Input.GetKeyDown(KeyCode.Q) && heldBody != null)
+            if (Input.GetKeyDown(KeyCode.Q) && heldCore != null)
             {
-                var body = heldBody;
-                Drop();
-                body.AddForce(playerCamera.transform.forward * 12f + Vector3.up * 2f, ForceMode.VelocityChange);
+                Vector3 throwVelocity = playerCamera.transform.forward * 12f + Vector3.up * 2f;
+                ReleaseHeldCore(throwVelocity);
             }
         }
 
@@ -160,35 +261,82 @@ namespace SignalHaul
             if (!Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.3f, ~0, QueryTriggerInteraction.Ignore))
                 return;
 
-            var body = hit.rigidbody;
-            if (body == null || body.isKinematic || body.GetComponent<SignalCore>() == null)
+            var core = hit.collider.GetComponentInParent<SignalCore>();
+            if (core == null || !core.IsSpawned || core.Delivered)
                 return;
 
-            heldBody = body;
-            heldBody.useGravity = false;
-            heldBody.linearDamping = 5f;
+            heldCore = core;
+            pendingGrabUntil = Time.time + .4f;
+            RequestGrabRpc(core.NetworkObjectId);
+        }
+
+        private void UpdateHeldCoreState()
+        {
+            if (heldCore == null)
+                return;
+
+            if (heldCore.Delivered)
+            {
+                heldCore = null;
+                return;
+            }
+
+            if (!heldCore.IsHeldBy(OwnerClientId) && Time.time > pendingGrabUntil)
+                heldCore = null;
+        }
+
+        private void ReleaseHeldCore(Vector3 throwVelocity)
+        {
+            if (heldCore == null)
+                return;
+
+            ulong id = heldCore.NetworkObjectId;
+            heldCore = null;
+            RequestReleaseRpc(id, throwVelocity);
         }
 
         public void Drop()
         {
-            if (heldBody == null)
+            if (IsOwner)
+                ReleaseHeldCore(Vector3.zero);
+        }
+
+        [Rpc(SendTo.Server)]
+        private void RequestGrabRpc(ulong coreNetworkObjectId, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId)
                 return;
 
-            heldBody.useGravity = true;
-            heldBody.linearDamping = .35f;
-            heldBody = null;
+            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(coreNetworkObjectId, out NetworkObject networkObject) &&
+                networkObject.TryGetComponent(out SignalCore core))
+            {
+                core.TryGrabServer(OwnerClientId);
+            }
+        }
+
+        [Rpc(SendTo.Server)]
+        private void RequestReleaseRpc(ulong coreNetworkObjectId, Vector3 throwVelocity, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId)
+                return;
+
+            if (NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(coreNetworkObjectId, out NetworkObject networkObject) &&
+                networkObject.TryGetComponent(out SignalCore core))
+            {
+                core.ReleaseServer(OwnerClientId, throwVelocity);
+            }
         }
 
         private void UpdatePrompt()
         {
-            if (heldBody != null)
+            if (heldCore != null)
             {
                 ContextPrompt = "E 놓기  /  Q 던지기";
                 return;
             }
 
             if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out var hit, 3.3f, ~0, QueryTriggerInteraction.Ignore) &&
-                hit.rigidbody != null && hit.rigidbody.GetComponent<SignalCore>() != null)
+                hit.collider.GetComponentInParent<SignalCore>() is SignalCore core && !core.Delivered)
             {
                 ContextPrompt = "E SIGNAL CORE 잡기";
             }
@@ -198,28 +346,80 @@ namespace SignalHaul
             }
         }
 
-        public void TakeDamage(float amount)
+        private void RequestDamage(float amount)
         {
-            if (damageCooldown > 0f || GameManager.Instance == null || GameManager.Instance.Ended)
+            if (amount <= 0f)
                 return;
 
-            damageCooldown = .55f;
-            Health -= amount;
-            Drop();
+            RequestDamageRpc(amount);
+        }
 
-            if (Health <= 0f)
-                GameManager.Instance.EndGame(false);
+        [Rpc(SendTo.Server)]
+        private void RequestDamageRpc(float amount, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId)
+                return;
+
+            ApplyDamageServer(Mathf.Clamp(amount, 0f, 60f));
+        }
+
+        public void ApplyDamageServer(float amount)
+        {
+            if (!IsServer || amount <= 0f || GameManager.Instance == null || GameManager.Instance.Ended)
+                return;
+
+            health.Value = Mathf.Max(0f, health.Value - amount);
+            ReleaseAnyHeldCoreServer();
+
+            if (health.Value <= 0f)
+                GameManager.Instance.EndGameServer(false);
         }
 
         public void RespawnWithDamage(float damage)
         {
-            Drop();
+            if (!IsOwner || respawnCooldown > 0f)
+                return;
+
+            respawnCooldown = 1f;
+            ReleaseHeldCore(Vector3.zero);
             controller.enabled = false;
             transform.position = spawnPoint;
             controller.enabled = true;
             verticalVelocity = 0f;
             fallPeak = 0f;
-            TakeDamage(damage);
+            RequestRespawnRpc(Mathf.Clamp(damage, 0f, 60f));
+        }
+
+        [Rpc(SendTo.Server)]
+        private void RequestRespawnRpc(float damage, RpcParams rpcParams = default)
+        {
+            if (rpcParams.Receive.SenderClientId != OwnerClientId)
+                return;
+
+            syncedPosition.Value = spawnPoint;
+            syncedRotation.Value = transform.rotation;
+            ApplyDamageServer(damage);
+        }
+
+        private void ReleaseAnyHeldCoreServer()
+        {
+            if (!IsServer || NetworkManager == null)
+                return;
+
+            foreach (NetworkObject spawnedObject in NetworkManager.SpawnManager.SpawnedObjectsList)
+            {
+                if (spawnedObject.TryGetComponent(out SignalCore core) && core.IsHeldBy(OwnerClientId))
+                {
+                    core.ReleaseServer(OwnerClientId, Vector3.zero);
+                    return;
+                }
+            }
+        }
+
+        public Vector3 GetServerHoldPosition()
+        {
+            Quaternion viewRotation = Quaternion.Euler(syncedPitch.Value, syncedRotation.Value.eulerAngles.y, 0f);
+            return syncedPosition.Value + Vector3.up * 1.45f + viewRotation * Vector3.forward * 2.35f;
         }
     }
 }
