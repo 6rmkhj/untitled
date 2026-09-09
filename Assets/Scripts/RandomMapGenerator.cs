@@ -1,21 +1,11 @@
 using System;
 using System.Collections.Generic;
-using Unity.Netcode;
 using UnityEngine;
 
 namespace SignalHaul
 {
-    [RequireComponent(typeof(NetworkObject))]
-    public sealed class RandomMapGenerator : NetworkBehaviour
+    public sealed class RandomMapGenerator : MonoBehaviour
     {
-        [Header("Scene References")]
-        [SerializeField] private Transform generatedRoot;
-        [SerializeField] private Material deckMaterial;
-        [SerializeField] private Material steelMaterial;
-        [SerializeField] private Material hazardMaterial;
-        [SerializeField] private SignalCore[] cores;
-        [SerializeField] private DroneHazard[] drones;
-
         [Header("Generation")]
         [SerializeField, Range(8, 16)] private int minLevels = 10;
         [SerializeField, Range(8, 16)] private int maxLevels = 13;
@@ -24,90 +14,25 @@ namespace SignalHaul
         [SerializeField] private float horizontalStep = 2.2f;
         [SerializeField] private float depthStep = 1.8f;
 
-        private readonly NetworkVariable<int> mapSeed = new(
-            0,
-            NetworkVariableReadPermission.Everyone,
-            NetworkVariableWritePermission.Server);
-
+        private Transform generatedRoot;
+        private GameObject staticTower;
+        private Material deckMaterial;
+        private Material steelMaterial;
+        private Material hazardMaterial;
         private readonly List<Vector3> levelCenters = new();
 
-        public int CurrentSeed => mapSeed.Value;
+        public int CurrentSeed { get; private set; }
         public int GeneratedLevelCount => levelCenters.Count;
 
-        public void Configure(
-            Transform root,
-            Material deck,
-            Material steel,
-            Material hazard,
-            SignalCore[] signalCores,
-            DroneHazard[] mapDrones)
+        public void Generate(int seed, bool placeNetworkObjects)
         {
-            generatedRoot = root;
-            deckMaterial = deck;
-            steelMaterial = steel;
-            hazardMaterial = hazard;
-            cores = signalCores;
-            drones = mapDrones;
-        }
-
-        public override void OnNetworkSpawn()
-        {
-            mapSeed.OnValueChanged += OnSeedChanged;
-
-            if (IsServer && mapSeed.Value == 0)
-            {
-                int seed;
-                do
-                {
-                    seed = UnityEngine.Random.Range(1, int.MaxValue);
-                }
-                while (seed == 0);
-
-                mapSeed.Value = seed;
-            }
-
-            if (mapSeed.Value != 0)
-                Generate(mapSeed.Value);
-        }
-
-        public override void OnNetworkDespawn()
-        {
-            mapSeed.OnValueChanged -= OnSeedChanged;
-        }
-
-        [ContextMenu("Regenerate On Server")]
-        public void RegenerateOnServer()
-        {
-            if (!IsServer || !IsSpawned)
+            if (seed == 0)
                 return;
 
-            int nextSeed;
-            do
-            {
-                nextSeed = UnityEngine.Random.Range(1, int.MaxValue);
-            }
-            while (nextSeed == mapSeed.Value);
-
-            mapSeed.Value = nextSeed;
-        }
-
-        private void OnSeedChanged(int previousValue, int newValue)
-        {
-            if (newValue != 0)
-                Generate(newValue);
-        }
-
-        private void Generate(int seed)
-        {
-            EnsureReferences();
-            if (generatedRoot == null)
-            {
-                Debug.LogError("SIGNAL HAUL: RandomMapGenerator has no Generated Root.");
-                return;
-            }
-
+            ResolveSceneReferences();
             ClearGeneratedChildren();
             levelCenters.Clear();
+            CurrentSeed = seed;
 
             var random = new System.Random(seed);
             int low = Mathf.Min(minLevels, maxLevels);
@@ -124,20 +49,72 @@ namespace SignalHaul
                 {
                     bool moveX = random.NextDouble() < .55;
                     float direction = random.Next(0, 2) == 0 ? -1f : 1f;
+
                     if (moveX)
                         x = Mathf.Clamp(x + direction * horizontalStep, -3.6f, 3.6f);
                     else
                         z = Mathf.Clamp(z + direction * depthStep, -2.8f, 2.8f);
                 }
 
-                var center = new Vector3(x, firstLevelY + i * levelHeight, z);
+                Vector3 center = new Vector3(x, firstLevelY + i * levelHeight, z);
                 levelCenters.Add(center);
                 BuildLevel(i, previous, center, random);
                 previous = center;
             }
 
-            if (IsServer)
+            if (staticTower != null)
+                staticTower.SetActive(false);
+
+            if (placeNetworkObjects)
                 PositionNetworkGameplayObjects();
+        }
+
+        private void ResolveSceneReferences()
+        {
+            if (generatedRoot != null)
+                return;
+
+            SignalHaulSceneMarker marker = FindFirstObjectByType<SignalHaulSceneMarker>();
+            Transform environment = null;
+            if (marker != null)
+                environment = marker.transform.Find("Environment");
+
+            if (environment == null)
+            {
+                GameObject environmentObject = GameObject.Find("Environment");
+                if (environmentObject != null)
+                    environment = environmentObject.transform;
+            }
+
+            if (environment == null)
+            {
+                environment = new GameObject("Environment").transform;
+                if (marker != null)
+                    environment.SetParent(marker.transform, false);
+            }
+
+            Transform towerTransform = environment.Find("Tower");
+            if (towerTransform != null)
+            {
+                staticTower = towerTransform.gameObject;
+                deckMaterial = FindMaterialByObjectName(towerTransform, "Deck");
+                steelMaterial = FindMaterialByObjectName(towerTransform, "Climb Wall");
+                hazardMaterial = FindMaterialByObjectName(towerTransform, "Hazard Bridge");
+            }
+
+            Transform existingGenerated = environment.Find("Generated Random Tower");
+            if (existingGenerated != null)
+                generatedRoot = existingGenerated;
+            else
+            {
+                var rootObject = new GameObject("Generated Random Tower");
+                rootObject.transform.SetParent(environment, false);
+                generatedRoot = rootObject.transform;
+            }
+
+            deckMaterial ??= CreateRuntimeMaterial("Random Deck", new Color(.25f, .29f, .3f), .45f, .3f);
+            steelMaterial ??= CreateRuntimeMaterial("Random Steel", new Color(.16f, .2f, .23f), .65f, .35f);
+            hazardMaterial ??= CreateRuntimeMaterial("Random Hazard", new Color(.95f, .55f, .08f), .15f, .3f);
         }
 
         private void BuildLevel(int index, Vector3 previous, Vector3 center, System.Random random)
@@ -193,65 +170,76 @@ namespace SignalHaul
             if (levelCenters.Count == 0)
                 return;
 
-            if (cores != null)
-            {
-                for (int i = 0; i < cores.Length; i++)
-                {
-                    if (cores[i] == null)
-                        continue;
+            SignalCore[] cores = FindObjectsByType<SignalCore>(FindObjectsSortMode.None);
+            Array.Sort(cores, (a, b) => string.CompareOrdinal(a.name, b.name));
 
-                    int levelIndex = Mathf.Clamp(
-                        Mathf.RoundToInt((i + 1f) / (cores.Length + 1f) * (levelCenters.Count - 1)),
-                        0,
-                        levelCenters.Count - 1);
-                    Vector3 position = levelCenters[levelIndex] + Vector3.up * 1.15f;
-                    cores[i].SetMapSpawnServer(position);
-                }
+            for (int i = 0; i < cores.Length; i++)
+            {
+                int levelIndex = Mathf.Clamp(
+                    Mathf.RoundToInt((i + 1f) / (cores.Length + 1f) * (levelCenters.Count - 1)),
+                    0,
+                    levelCenters.Count - 1);
+                cores[i].SetMapSpawnServer(levelCenters[levelIndex] + Vector3.up * 1.15f);
             }
 
-            if (drones != null)
+            DroneHazard[] drones = FindObjectsByType<DroneHazard>(FindObjectsSortMode.None);
+            Array.Sort(drones, (a, b) => string.CompareOrdinal(a.name, b.name));
+
+            for (int i = 0; i < drones.Length; i++)
             {
-                for (int i = 0; i < drones.Length; i++)
-                {
-                    if (drones[i] == null)
-                        continue;
-
-                    int levelIndex = Mathf.Clamp(
-                        Mathf.RoundToInt((i + .7f) / Mathf.Max(1f, drones.Length) * (levelCenters.Count - 1)),
-                        0,
-                        levelCenters.Count - 1);
-                    Vector3 position = levelCenters[levelIndex] + Vector3.up * 2.3f;
-                    drones[i].SetMapCenterServer(position);
-                }
+                int levelIndex = Mathf.Clamp(
+                    Mathf.RoundToInt((i + .7f) / Mathf.Max(1f, drones.Length) * (levelCenters.Count - 1)),
+                    0,
+                    levelCenters.Count - 1);
+                drones[i].SetMapCenterServer(levelCenters[levelIndex] + Vector3.up * 2.3f);
             }
-        }
-
-        private void EnsureReferences()
-        {
-            if (cores == null || cores.Length == 0)
-                cores = FindObjectsByType<SignalCore>(FindObjectsSortMode.None);
-            if (drones == null || drones.Length == 0)
-                drones = FindObjectsByType<DroneHazard>(FindObjectsSortMode.None);
         }
 
         private void ClearGeneratedChildren()
         {
+            if (generatedRoot == null)
+                return;
+
             for (int i = generatedRoot.childCount - 1; i >= 0; i--)
                 Destroy(generatedRoot.GetChild(i).gameObject);
         }
 
+        private static Material FindMaterialByObjectName(Transform root, string objectName)
+        {
+            foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer.gameObject.name == objectName && renderer.sharedMaterial != null)
+                    return renderer.sharedMaterial;
+            }
+
+            return null;
+        }
+
+        private static Material CreateRuntimeMaterial(string name, Color color, float metallic, float smoothness)
+        {
+            Shader shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
+            var material = new Material(shader) { name = name, color = color };
+            if (material.HasProperty("_BaseColor"))
+                material.SetColor("_BaseColor", color);
+            if (material.HasProperty("_Metallic"))
+                material.SetFloat("_Metallic", metallic);
+            if (material.HasProperty("_Glossiness"))
+                material.SetFloat("_Glossiness", smoothness);
+            if (material.HasProperty("_Smoothness"))
+                material.SetFloat("_Smoothness", smoothness);
+            return material;
+        }
+
         private static GameObject CreateCube(string name, Transform parent, Vector3 position, Vector3 scale, Material material)
         {
-            var gameObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            GameObject gameObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
             gameObject.name = name;
             gameObject.transform.SetParent(parent, true);
             gameObject.transform.position = position;
             gameObject.transform.localScale = scale;
-
-            var renderer = gameObject.GetComponent<Renderer>();
+            Renderer renderer = gameObject.GetComponent<Renderer>();
             if (renderer != null)
                 renderer.sharedMaterial = material;
-
             return gameObject;
         }
 
